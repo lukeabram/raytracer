@@ -3,6 +3,7 @@
 
 #include "hittable.h"
 #include "material.h"
+#include <thread>
 
 class camera {
     public:
@@ -10,6 +11,8 @@ class camera {
         int    image_width       = 100;    // Rendered image width
         int    samples_per_pixel = 10;     // Count of random samples for each pixel
         int    max_depth         = 10;     // Maximum number of ray bounces into scene
+        int    num_threads       = 10;      
+
 
         double vfov = 90;   // Vertical view angle (field of view)
         point3 lookfrom = point3(0,0,0);    // Point camera is looking from
@@ -19,25 +22,56 @@ class camera {
         double defocus_angle = 0;   // Variation angle of rays through each pixel
         double focus_dist = 10;     // Distance from camera lookpoint to plane of perfect focus
         
-
-        void render(const hittable& world) {
+        
+        void render(const hittable& world){
             initialize();
+            for(int i = 0; i < num_threads; i++){
+                threads.emplace_back(&camera::thread_render, this, std::ref(world), i);
+            }
 
+            std::clog << "\rScanlines remaining: " << rows_rem.load() << "      " << std::flush;
+            
+            for(auto& t : threads){
+                t.join();
+            }
+            
+            std::clog << "\rWriting...                                   ";
             // Render
             std::cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
+            for (int j = 0; j < image_height; j++){
+                for (int i = 0; i < image_width; i++){
+                    write_color(std::cout, image[j][i]);
+                }
+            }
+            std::clog << "\rDone.                                   \n";
+            
+        }
 
-            for (int j = 0; j < image_height; j++) {
-                std::clog << "\rScanlines remaining: " << (image_height - j) << ' ' << std::flush;
+        void thread_render(const hittable& world, int thread_idx) {
+
+            int rows = image_height / num_threads;
+            int row_start = rows * thread_idx; 
+            int row_end = rows * (thread_idx + 1);
+
+            if (thread_idx == num_threads - 1){
+                row_end = image_height;
+            }
+            
+            
+            for (int j = row_start; j < row_end; j++) {
                 for (int i = 0; i < image_width; i++) {
                     color pixel_color(0,0,0);
                     for (int sample = 0; sample < samples_per_pixel; sample++){
                         ray r = get_ray(i, j);
                         pixel_color += ray_color(r, max_depth, world);
                     }
-                    write_color(std::cout, pixel_samples_scale * pixel_color);
+                    image[j][i] = pixel_samples_scale * pixel_color;
+                    // write_color(std::cout, pixel_samples_scale * pixel_color);
                 }
+                rows_rem.fetch_sub(1);
+                std::clog << "\rScanlines remaining: " << rows_rem.load() << "      " << std::flush;
             }
-            std::clog << "\rDone.                                   \n";
+            
         }
 
     private:
@@ -50,14 +84,19 @@ class camera {
         vec3 u, v, w;                // Camera frame basis vectors
         vec3 defocus_disk_u;         // Defocus disk horizontal radius
         vec3 defocus_disk_v;         // Defocus disk vertical radius
-
+        std::vector<std::vector<color>> image;
+        std::vector<std::thread> threads;
+        std::atomic<int> rows_rem;
 
         void initialize() {
             // Calculate image_height, ensure it's at least 1.
             image_height = int(image_width / aspect_ratio);
             image_height = (image_height < 1) ? 1 : image_height;
-
+            rows_rem = image_height;
             pixel_samples_scale = 1.0 / samples_per_pixel;
+
+            // Initialize image storage
+            image.assign(image_height, std::vector<color>(image_width));
 
             center = lookfrom;
 
